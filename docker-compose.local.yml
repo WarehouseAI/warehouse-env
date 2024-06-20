@@ -1,0 +1,223 @@
+version: '3'
+
+networks:
+  app-network:
+    name: app-network
+volumes:
+  migrations:
+
+services:
+  proxy:
+    image: nginx:1.24-alpine
+    container_name: proxy_server
+    restart: unless-stopped
+    tty: true
+    ports:
+      - 80:80
+    depends_on:
+      - auth
+      - user
+      - script
+    volumes:
+      - ./:/var/www
+      - ./nginx/conf.d/:/etc/nginx/conf.d/
+    networks:
+      - app-network
+
+  db-auth:
+    image: postgres:14.10-alpine3.19
+    container_name: db-auth
+    networks:
+      - app-network
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: '${AUTH_DB_USER}'
+      POSTGRES_PASSWORD: '${AUTH_DB_PASS}'
+      POSTGRES_DB: '${AUTH_DB_NAME}'
+    ports:
+      - '${AUTH_DB_PORT}:5432'
+    volumes:
+      - ./xid.sql:/docker-entrypoint-initdb.d/xid.sql
+
+  db-users:
+    image: postgres:14.10-alpine3.19
+    container_name: db-users
+    networks:
+      - app-network
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: '${USERS_DB_USER}'
+      POSTGRES_PASSWORD: '${USERS_DB_PASS}'
+      POSTGRES_DB: '${USERS_DB_NAME}'
+    ports:
+      - '${USERS_DB_PORT}:5432'
+    volumes:
+      - ./xid.sql:/docker-entrypoint-initdb.d/xid.sql
+
+  db-script:
+    image: postgres:14.10-alpine3.19
+    container_name: db-script
+    networks:
+      - app-network
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: '${SCRIPT_DB_USER}'
+      POSTGRES_PASSWORD: '${SCRIPT_DB_PASS}'
+      POSTGRES_DB: '${SCRIPT_DB_NAME}'
+    ports:
+      - '${SCRIPT_DB_PORT}:5432'
+    volumes:
+      - ./xid.sql:/docker-entrypoint-initdb.d/xid.sql
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    hostname: rabbitmq
+    container_name: rabbitmq
+    ports:
+      - '${RMQ_PORT}:5672'
+      - 15672:15672
+    restart: always
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_DEFAULT_USER: '${RMQ_USER}'
+      RABBITMQ_DEFAULT_PASS: '${RMQ_PASS}'
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbit disk_free_limit 2147483648
+    networks:
+      - app-network
+
+  auth:
+    restart: always
+    container_name: auth
+    networks:
+      - app-network
+    build:
+      args:
+        - module=auth
+      context: ./auth-service
+      dockerfile: Dockerfile
+    environment:
+      LOG_PATH: /logs/auth.log
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      - db-auth
+      - rabbitmq
+    ports:
+      - 8001:8001
+      - 8010:8010
+
+  user:
+    restart: always
+    container_name: user
+    networks:
+      - app-network
+    build:
+      args:
+        - module=user
+      context: ./user-service
+      dockerfile: Dockerfile
+    environment:
+      LOG_PATH: /logs/user.log
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      - db-users
+      - rabbitmq
+    ports:
+      - 8002:8002
+      - 8020:8020
+
+  mail:
+    restart: always
+    container_name: mail
+    networks:
+      - app-network
+    build:
+      args:
+        - module=mail
+      context: ./mail-service
+      dockerfile: Dockerfile
+    environment:
+      LOG_PATH: /logs/mail.log
+    volumes:
+      - ./logs:/logs
+    command: >
+      /bin/bash -c "touch /logs/mail.log"
+    depends_on:
+      - user
+      - auth
+      - rabbitmq
+
+  script:
+    restart: always
+    container_name: script
+    networks:
+      - app-network
+    build:
+      args:
+        - module=script
+      context: ./script-service
+      dockerfile: Dockerfile
+    environment:
+      LOG_PATH: /logs/script.log
+    depends_on:
+      - db-script
+    volumes:
+      - ./logs:/logs
+    ports:
+      - 8003:8003
+
+  auth_migration_job:
+    networks:
+      - app-network
+    build:
+      context: ./auth-service
+      dockerfile: migrate.Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_USER: '${AUTH_DB_USER}'
+      POSTGRES_PASSWORD: '${AUTH_DB_PASS}'
+      POSTGRES_DB: '${AUTH_DB_NAME}'
+      POSTGRES_HOST: '${AUTH_DB_HOST}'
+      POSTGRES_PORT: '${AUTH_DB_PORT}'
+    depends_on:
+      - db-auth
+
+  users_migration_job:
+    networks:
+      - app-network
+    build:
+      context: ./user-service
+      dockerfile: migrate.Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_USER: '${USERS_DB_USER}'
+      POSTGRES_PASSWORD: '${USERS_DB_PASS}'
+      POSTGRES_DB: '${USERS_DB_NAME}'
+      POSTGRES_HOST: '${USERS_DB_HOST}'
+      POSTGRES_PORT: '${USERS_DB_PORT}'
+    depends_on:
+      - db-users
+
+  script_migration_job:
+    networks:
+      - app-network
+    build:
+      context: ./script-service
+      dockerfile: migrate.Dockerfile
+    env_file: .env
+    environment:
+      POSTGRES_USER: '${SCRIPT_DB_USER}'
+      POSTGRES_PASSWORD: '${SCRIPT_DB_PASS}'
+      POSTGRES_DB: '${SCRIPT_DB_NAME}'
+      POSTGRES_HOST: '${SCRIPT_DB_HOST}'
+      POSTGRES_PORT: '${SCRIPT_DB_PORT}'
+    depends_on:
+      - db-script

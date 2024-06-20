@@ -1,0 +1,8 @@
+{
+  "model": {
+    "required": true,
+    "values": ["chatgpt-3.5", "chatgpt-4o", "..."],
+    "type": "select"
+  },
+  "...": {}
+}
